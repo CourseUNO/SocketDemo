@@ -1,12 +1,30 @@
+import ipaddress
 import socket
 import struct
 import time
 import os
 
 # ICMP Echo Request type and code
+# reference: https://datatracker.ietf.org/doc/html/rfc792
 ICMP_ECHO_REQUEST = 8
 ICMP_CODE = 0
 
+# Code	C Type	Python Type	Size (bytes) for struct pack and unpack
+# x	pad byte	no value	1
+# c	char	bytes (1)	1
+# b	signed char	int	1
+# B	unsigned char	int	1
+# ?	_Bool	bool	1
+# h	short	int	2
+# H	unsigned short	int	2
+# i	int	int	4
+# I	unsigned int	int	4
+# f	float	float	4
+# d	double	float	8
+# s	char[]	bytes	n
+# p	char[]	bytes	n
+# q	long long	int	8
+# Q	unsigned long long	int	8
 
 def checksum(data):
     """Calculate the checksum for the ICMP packet."""
@@ -24,6 +42,7 @@ def checksum(data):
 
 def create_icmp_packet(identifier, sequence):
     """Create an ICMP Echo Request packet."""
+    # [Type (1 byte) | Code (1 byte) | Checksum (2 bytes) | Identifier (2 bytes) | Sequence Number (2 bytes)]
     header = struct.pack('bbHHh', ICMP_ECHO_REQUEST, ICMP_CODE, 0, identifier, sequence)
     data = b'Hello, ICMP!'  # Payload
     my_checksum = checksum(header + data)
@@ -35,9 +54,10 @@ def parse_icmp_reply(data):
     """Parse the IP and ICMP headers from the reply packet."""
     # IP header is typically 20 bytes (without options)
     ip_header = data[:20]
+    # The ! ensures big-endian interpretation, as required by IP standards
     iph = struct.unpack('!BBHHHBBH4s4s', ip_header)
     ttl = iph[5]  # TTL is the 6th field in the IP header
-
+    print(iph[6], ipaddress.IPv4Address(iph[9]), ipaddress.IPv4Address(iph[8]))
     # ICMP header starts after IP header (20 bytes)
     icmp_header = data[20:28]  # ICMP header is 8 bytes
     icmph = struct.unpack('!BBHHh', icmp_header)
