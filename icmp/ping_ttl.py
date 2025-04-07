@@ -1,30 +1,13 @@
-import ipaddress
 import socket
 import struct
 import time
 import os
+import re
 
 # ICMP Echo Request type and code
-# reference: https://datatracker.ietf.org/doc/html/rfc792
 ICMP_ECHO_REQUEST = 8
 ICMP_CODE = 0
 
-# Code	C Type	Python Type	Size (bytes) for struct pack and unpack
-# x	pad byte	no value	1
-# c	char	bytes (1)	1
-# b	signed char	int	1
-# B	unsigned char	int	1
-# ?	_Bool	bool	1
-# h	short	int	2
-# H	unsigned short	int	2
-# i	int	int	4
-# I	unsigned int	int	4
-# f	float	float	4
-# d	double	float	8
-# s	char[]	bytes	n
-# p	char[]	bytes	n
-# q	long long	int	8
-# Q	unsigned long long	int	8
 
 def checksum(data):
     """Calculate the checksum for the ICMP packet."""
@@ -42,7 +25,6 @@ def checksum(data):
 
 def create_icmp_packet(identifier, sequence):
     """Create an ICMP Echo Request packet."""
-    # [Type (1 byte) | Code (1 byte) | Checksum (2 bytes) | Identifier (2 bytes) | Sequence Number (2 bytes)]
     header = struct.pack('bbHHh', ICMP_ECHO_REQUEST, ICMP_CODE, 0, identifier, sequence)
     data = b'Hello, ICMP!'  # Payload
     my_checksum = checksum(header + data)
@@ -52,14 +34,11 @@ def create_icmp_packet(identifier, sequence):
 
 def parse_icmp_reply(data):
     """Parse the IP and ICMP headers from the reply packet."""
-    # IP header is typically 20 bytes (without options)
     ip_header = data[:20]
-    # The ! ensures big-endian interpretation, as required by IP standards
     iph = struct.unpack('!BBHHHBBH4s4s', ip_header)
-    ttl = iph[5]  # TTL is the 6th field in the IP header
-    print(ttl, iph[6], ipaddress.IPv4Address(iph[9]), ipaddress.IPv4Address(iph[8]))
-    # ICMP header starts after IP header (20 bytes)
-    icmp_header = data[20:28]  # ICMP header is 8 bytes
+    ttl = iph[5]
+
+    icmp_header = data[20:28]
     icmph = struct.unpack('!BBHHh', icmp_header)
     icmp_type = icmph[0]
     icmp_code = icmph[1]
@@ -69,43 +48,55 @@ def parse_icmp_reply(data):
     return ttl, icmp_type, icmp_code, icmp_id, icmp_seq
 
 
-def ping(host, count=4, timeout=1):
-    """Ping a host using ICMP and parse reply details."""
+def is_valid_ip(host):
+    """Check if the input is a valid IPv4 address."""
+    ip_pattern = re.compile(
+        r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
+    return ip_pattern.match(host) is not None
+
+
+def ping(host, ttl=64, count=4, timeout=1):
+    """Ping a host with a custom TTL using the default source IP."""
     try:
-        dest_addr = socket.gethostbyname(host)
-        print(f"Pinging {host} [{dest_addr}] with {len(b'Hello, ICMP!')} bytes of data:")
+        dest_addr = host if is_valid_ip(host) else socket.gethostbyname(host)
+        print(f"Pinging {dest_addr} with {len(b'Hello, ICMP!')} bytes of data (TTL={ttl}):")
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)  # Set custom TTL
         sock.settimeout(timeout)
 
-        identifier = os.getpid() & 0xFFFF  # Unique ID for this process
+        identifier = os.getpid() & 0xFFFF
 
         for seq in range(count):
             packet = create_icmp_packet(identifier, seq)
-            start_time = time.time()
-
-            sock.sendto(packet, (dest_addr, 0))
             try:
+                start_time = time.time()
+                sock.sendto(packet, (dest_addr, 0))
                 data, addr = sock.recvfrom(1024)
                 end_time = time.time()
-                rtt = (end_time - start_time) * 1000  # Round-trip time in ms
+                rtt = (end_time - start_time) * 1000
 
-                # Parse the reply
-                ttl, icmp_type, icmp_code, icmp_id, icmp_seq = parse_icmp_reply(data)
+                ttl_reply, icmp_type, icmp_code, icmp_id, icmp_seq = parse_icmp_reply(data)
 
-                # Display detailed response
-                print(f"Reply from {addr[0]}: seq={icmp_seq} time={rtt:.2f}ms TTL={ttl} "
-                      f"Type={icmp_type} Code={icmp_code} ID={icmp_id}")
+                if icmp_type == 0:  # Echo Reply
+                    print(f"Reply from {addr[0]}: seq={icmp_seq} time={rtt:.2f}ms TTL={ttl_reply}")
+                elif icmp_type == 11:  # Time Exceeded (TTL expired)
+                    print(f"TTL Expired from {addr[0]}: seq={seq} time={rtt:.2f}ms")
+                else:
+                    print(f"Non-Echo Reply from {addr[0]}: seq={seq} Type={icmp_type} Code={icmp_code}")
             except socket.timeout:
                 print(f"Request timed out for seq={seq}")
-            time.sleep(1)  # Wait between pings
+            time.sleep(1)
 
         sock.close()
     except socket.gaierror:
         print("Error: Hostname could not be resolved.")
     except PermissionError:
         print("Error: Run this script with administrative/root privileges.")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
 
 
 if __name__ == "__main__":
-    ping("8.8.8.8")  # Example: Ping Google's DNS server
+    print("Test: Pinging 8.8.8.8 with TTL=2")
+    ping("8.8.8.8", ttl=5)
